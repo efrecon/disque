@@ -1,3 +1,13 @@
+##################
+## Module Name     --  disque.tm
+## Original Author --  Emmanuel Frecon - emmanuel@sics.se
+## Description:
+##
+##     This module provides a high-level interface to the DISQUE distributed
+##     message broker. DISQUE is available at https://github.com/antirez/disque
+##
+##################
+
 package require Tcl 8.6
 
 package require repro;   # repro implements the REDIS protocol

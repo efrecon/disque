@@ -1,3 +1,17 @@
+##################
+## Module Name     --  repro.tm
+## Original Author --  Emmanuel Frecon - emmanuel@sics.se
+## Description:
+##
+##     This module implements the base functionality to talk to remote REDIS
+##     server. It does not provide a high-level abstraction of the API, but
+##     rather a way to send commands and receives their answers given you are
+##     aware of the protocol semantics.
+##
+##################
+
+package require Tcl 8.6
+
 namespace eval ::repro {
     # This namespace contains the default options for all created REDIS
     # connections.
