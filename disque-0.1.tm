@@ -1,6 +1,6 @@
 package require Tcl 8.6
 
-package require repro
+package require repro;   # repro implements the REDIS protocol
 
 namespace eval ::disque {
     namespace eval vars {
@@ -34,7 +34,9 @@ namespace eval ::disque {
     }
     
     namespace export {[a-z]*}
-    namespace ensemble create
+    # Create an alias for new as the name of the current namespace, this is the
+    # only command that is really exposed.
+    interp alias {} [namespace current] {} [namespace current]::new
 }
 
 proc ::disque::new { args } {
@@ -45,7 +47,7 @@ proc ::disque::new { args } {
     interp alias {} $d {} [namespace current]::Dispatch $d
     
     dict set D sock ""
-    Connect $d
+    Connect $d;  # XXX: Catch, capture error, cleanup and return error
     
     return $d
 }
