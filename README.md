@@ -8,6 +8,7 @@ modules abstracts most of the API, as examplified in the following code snippet.
     set d [disque -nodes localhost];           # Connect to localhost only.
     set id [$d addjob /queue test];            # Enqueue a job
     lassign [$d getjob /queue] queue id body;  # Get it back
+    $d ackjob $id;                             # ACK it as done.
     
 The programming interface for the main `disque` module happens through a single
 command called `disque`, which will connect randomly to one of the nodes

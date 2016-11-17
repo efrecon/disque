@@ -25,6 +25,8 @@ namespace eval ::disque {
         variable -nodes [list localhost]
         variable -liveness [list]
         variable -auth "";      # Default auth if not part of node specification.
+        variable -grace 5000;   # Grace period when shutting down node
+        variable -polldown 100; # Poll (in ms) for detecting jobs end on shutdown
     }
     # This holds the defaults options for new jobs.
     namespace eval addjob {
@@ -36,11 +38,28 @@ namespace eval ::disque {
         variable -maxlen -1;   # Will mean no maxlen
         variable -async off;
     }
+    # This holds the defaults options for getting jobs from queues
     namespace eval getjob {
         variable -nohang off
         variable -timeout -1
         variable -count -1
         variable -withcounters off
+    }
+    # This holds the defaults options for iterating through queues
+    namespace eval qscan {
+        variable -count -1
+        variable -busyloop off
+        variable -minlen -1
+        variable -maxlex -1
+        variable -importrate -1
+    }
+    # This holds the defaults options for iterating through jobs
+    namespace eval jscan {
+        variable -count -1
+        variable -busyloop off
+        variable -queue ""
+        variable -reply ""
+        variable -states {}
     }
     
     namespace export {[a-z]*}
@@ -57,7 +76,11 @@ proc ::disque::new { args } {
     interp alias {} $d {} [namespace current]::Dispatch $d
     
     dict set D sock ""
-    Connect $d;  # XXX: Catch, capture error, cleanup and return error
+    if { [catch {Connect $d} err] } {
+        interp alias {} $d {}
+        unset $d
+        return -code error $err
+    }
     
     return $d
 }
@@ -67,6 +90,7 @@ proc ::disque::command { d cmd args } {
     upvar \#0 $d D
     
     if { [dict get $D sock] ne "" } {
+        Liveness $d COMMAND $cmd $args
         set answer [repro command [dict get $D sock] [string toupper $cmd] {*}$args]
         return $answer
     }
@@ -74,13 +98,82 @@ proc ::disque::command { d cmd args } {
 }
 
 
+proc ::disque::close { d } {
+    Liveness $d CLOSE
+    repro disconnect $d
+    unset $d
+    interp alias {} $d {}
+}
+
+
+proc ::disque::shutdown { d } {
+    upvar \#0 $d D
+    command $d CLUSTER leaving yes
+    Liveness $d LEAVING
+    if { [dict get $D -grace] > 0 } {
+        if { [dict get $D -polldown] > 0 } {
+            dict set D leaving [after idle [list [namespace current]::Leave? $d]]
+        }
+        dict set D timeout [after [dict get $D -grace] [list [namespace current]::Timeout $d]]
+    }
+}
+
+
+proc ::disque::Shutdown { d } {
+    upvar \#0 $d D
+    catch {command $d SHUTDOWN}
+    Liveness $d SHUTDOWN
+    catch {close $d}        
+}
+
+
+proc ::disque::Timeout { d } {
+    upvar \#0 $d D
+    if { [dict exists $D leaving] } {
+        after cancel [dict get $D leaving]
+        dict unset D leaving
+    }
+    Shutdown $d
+}
+
+
+proc ::disque::Leave? { d } {
+    upvar \#0 $d D
+    
+    # Get number of registered jobs and quit once zero.
+    set response [CommandINFO $d jobs]
+    if { [dict exists $response registered_jobs] } {
+        if { [dict get $response registered_jobs] == 0 } {
+            # Remove timeout
+            if { [dict exists $D timeout] } {
+                after cancel [dict get $D timeout]
+                dict unset D timeout
+            }
+            Liveness $d LEFT
+            ### We should send the following command to all OTHER nodes in
+            ### cluster, meaning we need to know which they are, through issuing
+            ### a new HELLO command.
+            ###command $d CLUSTER forget [dict get $D id]
+            Shutdown $d
+        }
+    }
+    dict set D leaving [after [dict get $D -polldown] [list [namespace current]::Leave? $d]]
+}
+
+
 proc ::disque::Dispatch { d cmd args } {
+    if { [string tolower $cmd] eq $cmd } {
+        if { [llength [info commands [namespace current]::$cmd]] } {
+            tailcall [namespace current]::$cmd $d {*}$args
+        }
+    }
+    
     set cmd [string toupper $cmd]
     if { [llength [info commands [namespace current]::Command$cmd]] } {
         tailcall [namespace current]::Command$cmd $d {*}$args
     } else {
         tailcall [namespace current]::command $d $cmd {*}$args
-    }
+    }    
 }
 
 
@@ -241,6 +334,66 @@ proc ::disque::CommandJobs { d cmd args } {
     
 }
 
+
+proc ::disque::CommandQSCAN { d cursor args } {
+    repro defaults SCAN qscan {*}$args
+    
+    set cmd [list $cursor]
+    Opt2CommandInteger cmd $SCAN -count COUNT
+    Opt2CommandBoolean cmd $SCAN -busyloop BUSYLOOP
+    Opt2CommandInteger cmd $SCAN -minlen MINLEN
+    Opt2CommandInteger cmd $SCAN -maxlen MAXLEN
+    Opt2CommandInteger cmd $SCAN -importrate IMPORTRATE
+    return [command $d QSCAN {*}$cmd]
+}
+
+
+proc ::disque::CommandJSCAN { d cursor args } {
+    repro defaults SCAN jscan {*}$args
+    
+    set cmd [list $cursor]
+    Opt2CommandInteger cmd $SCAN -count COUNT
+    Opt2CommandBoolean cmd $SCAN -busyloop BUSYLOOP
+    Opt2CommandString cmd $SCAN -queue QUEUE
+    if { [dict exists $SCAN -reply] } {
+        if { [dict get $SCAN -reply] ni [list all id] } {
+            return -code error "Reply [dict get $SCAN -reply] not a proper reply"
+        }
+        Opt2CommandString cmd $SCAN -reply REPLY
+    }
+    if { [dict exists $SCAN -states] } {
+        foreach s [dict get $SCAN -states] {
+            lappend cmd STATE $s
+        }
+    }
+    return [command $d JSCAN {*}$cmd]
+}
+
+
+proc ::disque::CommandINFO { d {section "default" } } {
+    set lines [command $d INFO $section]
+    set d [dict create]
+    foreach l [split $lines "\n"] {
+        set l [string trim $l]
+        if { $l ne "" && [string index $l 0] ne "\#" } {
+            set colon [string first ":" $l]
+            dict set d [string range $l 0 [expr {$colon-1}]] [string range $l [expr {$colon+1}] end]
+        }
+    }
+    return $d
+}
+
+
+proc ::disque::CommandPAUSE { d queue args } {
+    foreach k $args {
+        if { $k ni [list in out all none state bcast] } {
+            return -code error "$k is not a recognised paused state"
+        }
+    }
+    return [command $d PAUSE $queue {*}$args]
+}
+
+
 proc ::disque::Opt2CommandBoolean { argv_ D opt cmd } {
     upvar $argv_ argv
     if { [string is true -strict [dict get $D $opt]] } {
@@ -261,6 +414,15 @@ proc ::disque::Opt2CommandInteger { argv_ D opt cmd } {
     }    
 }
 
+proc ::disque::Opt2CommandString { argv_ D opt cmd } {
+    upvar $argv_ argv
+    if { [dict get $D $opt] >= 0 } {
+        if { $cmd ne "" } {
+            lappend argv $cmd
+        }
+        lappend argv [dict get $D $opt]
+    }    
+}
 
 proc ::disque::Liveness { d state args } {
     upvar \#0 $d D
