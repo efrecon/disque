@@ -1,18 +1,16 @@
 ##################
-## Module Name     --  repro.tm
+## Module Name     --  resp.tm
 ## Original Author --  Emmanuel Frecon - emmanuel@sics.se
 ## Description:
 ##
 ##     This module implements the base functionality to talk to remote REDIS
-##     server. It does not provide a high-level abstraction of the API, but
-##     rather a way to send commands and receives their answers given you are
-##     aware of the protocol semantics.
+##     servers through the RESP protocol (REdis Serialisation Protocol).
 ##
 ##################
 
 package require Tcl 8.6
 
-namespace eval ::repro {
+namespace eval ::resp {
     # This namespace contains the default options for all created REDIS
     # connections.
     namespace eval vars {
@@ -24,13 +22,12 @@ namespace eval ::repro {
     namespace ensemble create
 }
 
-# ::repro::connect -- Connect to REDIS host
+# ::resp::connect -- Connect to REDIS host
 #
 #       Connect to a redis host and return an identifier for the connection.
 #       This identifier will be used in the remaining exported commands of the
 #       library. Apart from the hostname, this procedure can take the following
 #       options:
-#       -eol    Marker for End-of-Line in REDIS protocol, you shouldn't really change!
 #       -port   Port to connect to, defaults the default REDIS port.
 #       -auth   Password to authenticate with at connection.
 #
@@ -44,24 +41,28 @@ namespace eval ::repro {
 #
 # Side Effects:
 #       None.
-proc ::repro::connect { host args } {
-    defaults CX vars {*}$args
+proc ::resp::connect { host args } {
+    # Get options, use the global vars namespace as the source for good
+    # defaults.
+    getopt args -port port ${vars::-port}
+    getopt args -auth paswd ${vars::-auth}
     
     # Now open the socket to the remote server.
-    set sock [socket $host [dict get $CX -port]]
+    set sock [socket $host $port]
     fconfigure $sock -translation binary
 
     # Create a variable, in this namespace, using the (unique) name of the
     # socket as the name, copy information from the CX dictionary into it.
     set cx [namespace current]::$sock
-    dict for {k v} $CX {
-        dict set $cx $k $v
-    }
-    dict set $cx sock $sock; # Remember the socket, even though it's obvious
+    upvar \#0 $cx CX
+    dict set CX -port $port
+    dict set CX -auth $paswd
+    dict set CX -host $host
+    dict set CX sock  $sock; # Remember the socket, even though it's obvious
     
     # Authenticate at server now that we have a connection
-    if { [dict get $CX -auth] ne "" } {
-        set ok [sync $sock AUTH [dict get $CX -auth]]
+    if { $paswd ne "" } {
+        set ok [sync $sock AUTH $paswd]
         if { $ok ne "OK" } {
             unset $cx
             return -code error "Authentication failure at server"
@@ -72,7 +73,39 @@ proc ::repro::connect { host args } {
 }
 
 
-# ::repro::defaults -- Init and option parsing based on namespace.
+# ::resp::getopt -- Get options
+#
+#       From http://wiki.tcl.tk/17342
+#
+# Arguments:
+#	_argv	"pointer" to incoming arguments
+#	name	Name of option to extract
+#	_var	Pointer to variable to set
+#	default	Default value
+#
+# Results:
+#       1 if the option was found, 0 otherwise
+#
+# Side Effects:
+#       None.
+proc ::resp::getopt {_argv name {_var ""} {default ""}} {
+    upvar 1 $_argv argv $_var var
+    set pos [lsearch -regexp $argv ^$name]
+    if {$pos>=0} {
+        set to $pos
+        if {$_var ne ""} {
+            set var [lindex $argv [incr to]]
+        }
+        set argv [lreplace $argv $pos $to]
+        return 1
+    } else {
+        if {[llength [info level 0]] == 5} {set var $default}
+        return 0
+    }
+}
+
+ 
+# ::resp::defaults -- Init and option parsing based on namespace.
 #
 #       This procedure takes the dashled variables of a given (sub)namespace to
 #       initialise a dictionary. These variables are considered as being the
@@ -91,32 +124,68 @@ proc ::repro::connect { host args } {
 #
 # Side Effects:
 #       None.
-proc ::repro::defaults { cx_ ns args } {
+proc ::resp::defaults { cx_ ns args } {
     upvar $cx_ CX
 
-    # Set defaults out of library defaults in vars sub-namespace
-    foreach v [uplevel info vars [string trimright $ns :]::-*] {
-        dict set CX [lindex [split $v :] end] [set $v]
-    }
-    
-    # Get options from arguments and set their values, only if these are valid
-    # options.
     set parsed [list]
-    foreach {k v} $args {
-        set k -[string trimleft $k -]
-        if { [dict exists $CX $k] } {
-            dict set CX $k $v
-            lappend parsed $k
-        } else {
-            return -code error "$k is not a valid option"
+    foreach v [uplevel info vars [string trimright $ns :]::-*] {
+        set opt [lindex [split $v :] end]
+        if { [getopt args $opt value [set $v]] } {
+            lappend parsed $opt
         }
+        dict set CX $opt $value
     }
     
     return $parsed
 }
 
 
-# ::repro::disconnect -- Disconnect from server
+# ::resp::isolate -- Isolate options from arguments
+#
+#       Isolate dash-led options from the rest of the arguments. This procedure
+#       prefers the double-dash as a marker between the options and the
+#       arguments, but it is also able to traverse until the end of the options
+#       and the beginning of the arguments. Traversal requires that no value of
+#       an option starts with a dash to work properly.
+#
+# Arguments:
+#	args_	Pointer to list of arguments (will be modified!)
+#	opts_	Pointer to list of options
+#
+# Results:
+#       None.
+#
+# Side Effects:
+#       Modifies the args and opts lists that are passed as parameters to
+#       reflect the arguments and the options.
+proc ::resp::isolate { args_ opts_ } {
+    upvar $args_ args $opts_ opts
+    set idx [lsearch $args "--"]
+    if { $idx >= 0 } {
+        set opts [lrange $args 0 [expr {$idx-1}]]
+        set args [lrange $args [expr {$idx+1}] end]
+    } else {
+        set opts [list]
+        for {set i 0} {$i <[llength $args] } { incr i 2} {
+            set opt [lindex $args $i]
+            set val [lindex $args [expr {$i+1}]]
+            if { [string index $opt 0] eq "-" } {
+                if { [string index $val 0] eq "-" } {
+                    incr i -1; # Consider next not next-next!
+                    lappend opts $opt
+                } else {
+                    lappend opts $opt $val
+                }
+            } else {
+                break
+            }
+        }
+        set args [lrange $args $i end]
+    }    
+}
+
+
+# ::resp::disconnect -- Disconnect from server
 #
 #       Disconnect from a REDIS server and empty all references to the server.
 #
@@ -128,7 +197,7 @@ proc ::repro::defaults { cx_ ns args } {
 #
 # Side Effects:
 #       Might generate errors on connection closing.
-proc ::repro::disconnect { sock } {
+proc ::resp::disconnect { sock } {
     set cx [namespace current]::$sock
     if { ![info exists $cx] } {
         return -code error "$sock is not a known connection"
@@ -139,35 +208,46 @@ proc ::repro::disconnect { sock } {
 }
 
 
-# ::repro::command -- Send command to server, return its answer
+# ::resp::command -- Send command to server, return its answer
 #
-#       Sends a REDIS command to a remote server, and wait for its answer.
+#       Sends a REDIS command to a remote server, and possibly wait for its answer.
 #       The command will automatically be converted to uppercase, if necessary.
+#       The arguments can contain a number of dash-led options and their value,
+#       separated from the remaining of the arguments by a double-dash. The only
+#       option at present is -reply, which contains a callback that will be
+#       triggered with the content of the reply once it has been made available.
 #
 # Arguments:
 #	sock	Identifier of the REDIS connection, as returned from connect
 #	cmd	Command to send
-#	args	Arguments to send
+#	args	Arguments to send, possibly led by dash-led options
 #
 # Results:
 #       The result of the command is returned, maybe as a list if the answer was
-#       coded in multi-bulk format.
+#       coded in multi-bulk format. When called in asynchronous mode, this
+#       procedure will callback the trigger with the content of the answer when
+#       it has been made available.
 #
 # Side Effects:
 #       Might generate errors when writing/reading data to/from socket
-proc ::repro::command { sock cmd args } {
+proc ::resp::command { sock cmd args } {
     # Check that this is an existing connection
     set cx [namespace current]::$sock
     if { ![info exists $cx] } {
         return -code error "$sock is not a known connection"
     }
 
-    send $sock $cmd {*}$args    
-    return [reply $sock]
+    isolate args opts
+    send $sock $cmd {*}$args
+    if { [getopt opts -reply cb] } {
+        fileevent $sock readable [list ReadAndCallback sock cb]
+    } else {
+        return [reply $sock]
+    }
 }
 
 
-# ::repro::send -- Send command to server
+# ::resp::send -- Send command to server
 #
 #       Sends a REDIS command to a remote server, not waiting for its answer.
 #       The command will automatically be converted to uppercase, if necessary.
@@ -182,7 +262,7 @@ proc ::repro::command { sock cmd args } {
 #
 # Side Effects:
 #       Might generate errors when writing data to socket
-proc ::repro::send { sock cmd args } {
+proc ::resp::send { sock cmd args } {
     # Check that this is an existing connection
     set cx [namespace current]::$sock
     if { ![info exists $cx] } {
@@ -197,7 +277,7 @@ proc ::repro::send { sock cmd args } {
 }
 
 
-# ::repro::reply -- Read reply from server
+# ::resp::reply -- Read reply from server
 #
 #       Read the reply from a command that has been sent to the server using the
 #       procedure send. This implementation is aware of all the packetisation
@@ -212,7 +292,7 @@ proc ::repro::send { sock cmd args } {
 #
 # Side Effects:
 #       Might generate errors when reading data from socket
-proc ::repro::reply { sock } {
+proc ::resp::reply { sock } {
     # Check that this is an existing connection
     set cx [namespace current]::$sock
     if { ![info exists $cx] } {
@@ -242,7 +322,16 @@ proc ::repro::reply { sock } {
 }
 
 
-proc ::repro::MWrite { sock cmd args } {
+proc ::resp::ReadAndCallback { sock cb } {
+    fileevent $sock readable {}
+    set response [reply $sock]
+    if { [catch {{*}$cb $reply} err] } {
+        return -code error "Could not callback with reply: $err"
+    }
+}
+
+
+proc ::resp::MWrite { sock cmd args } {
     set len [llength $args];
     incr len;  # Count the command as well
     puts -nonewline $sock "*$len${vars::-eol}"
@@ -256,7 +345,7 @@ proc ::repro::MWrite { sock cmd args } {
     flush $sock
 }
 
-proc ::repro::Write { sock cmd args } {
+proc ::resp::Write { sock cmd args } {
     puts -nonewline $sock [string toupper $cmd]
     if { [llength $args] } {
         puts -nonewline $sock " "
@@ -267,7 +356,7 @@ proc ::repro::Write { sock cmd args } {
     flush $sock
 }
 
-proc ::repro::ReadMultiBulk { sock } {
+proc ::resp::ReadMultiBulk { sock } {
     set len [ReadLine $sock]
     if { $len < 0 } {
         return
@@ -281,7 +370,7 @@ proc ::repro::ReadMultiBulk { sock } {
 }
 
 
-proc ::repro::ReadBulk { sock } {
+proc ::resp::ReadBulk { sock } {
     set len [ReadLine $sock]
     if { $len < 0 } {
         return
@@ -291,7 +380,6 @@ proc ::repro::ReadBulk { sock } {
     return $buf
 }
 
-proc ::repro::ReadLine { sock } {
+proc ::resp::ReadLine { sock } {
     return [string trim [gets $sock]]
 }
-
