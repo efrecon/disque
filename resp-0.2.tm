@@ -73,118 +73,6 @@ proc ::resp::connect { host args } {
 }
 
 
-# ::resp::getopt -- Get options
-#
-#       From http://wiki.tcl.tk/17342
-#
-# Arguments:
-#	_argv	"pointer" to incoming arguments
-#	name	Name of option to extract
-#	_var	Pointer to variable to set
-#	default	Default value
-#
-# Results:
-#       1 if the option was found, 0 otherwise
-#
-# Side Effects:
-#       None.
-proc ::resp::getopt {_argv name {_var ""} {default ""}} {
-    upvar 1 $_argv argv $_var var
-    set pos [lsearch -regexp $argv ^$name]
-    if {$pos>=0} {
-        set to $pos
-        if {$_var ne ""} {
-            set var [lindex $argv [incr to]]
-        }
-        set argv [lreplace $argv $pos $to]
-        return 1
-    } else {
-        if {[llength [info level 0]] == 5} {set var $default}
-        return 0
-    }
-}
-
- 
-# ::resp::defaults -- Init and option parsing based on namespace.
-#
-#       This procedure takes the dashled variables of a given (sub)namespace to
-#       initialise a dictionary. These variables are considered as being the
-#       canonical set of options for a command or object and contain good
-#       defaults, and the procedure will capture these from the arguments.
-#
-# Arguments:
-#	cx_	"Pointer" to dictionary to initialise and parse options in.
-#	ns	Namespace (FQ or relative to caller) where to get options from
-#	args	List of dashled options and arguments, must match content of namespace
-#
-# Results:
-#       Return the list of options that were taken from the arguments, an error
-#       when an option that does not exist in the namespace as a variable was
-#       found in the arguments.
-#
-# Side Effects:
-#       None.
-proc ::resp::defaults { cx_ ns args } {
-    upvar $cx_ CX
-
-    set parsed [list]
-    foreach v [uplevel info vars [string trimright $ns :]::-*] {
-        set opt [lindex [split $v :] end]
-        if { [getopt args $opt value [set $v]] } {
-            lappend parsed $opt
-        }
-        dict set CX $opt $value
-    }
-    
-    return $parsed
-}
-
-
-# ::resp::isolate -- Isolate options from arguments
-#
-#       Isolate dash-led options from the rest of the arguments. This procedure
-#       prefers the double-dash as a marker between the options and the
-#       arguments, but it is also able to traverse until the end of the options
-#       and the beginning of the arguments. Traversal requires that no value of
-#       an option starts with a dash to work properly.
-#
-# Arguments:
-#	args_	Pointer to list of arguments (will be modified!)
-#	opts_	Pointer to list of options
-#
-# Results:
-#       None.
-#
-# Side Effects:
-#       Modifies the args and opts lists that are passed as parameters to
-#       reflect the arguments and the options.
-proc ::resp::isolate { args_ opts_ } {
-    upvar $args_ args $opts_ opts
-    set idx [lsearch $args "--"]
-    if { $idx >= 0 } {
-        set opts [lrange $args 0 [expr {$idx-1}]]
-        set args [lrange $args [expr {$idx+1}] end]
-    } else {
-        set opts [list]
-        for {set i 0} {$i <[llength $args] } { incr i 2} {
-            set opt [lindex $args $i]
-            set val [lindex $args [expr {$i+1}]]
-            if { [string index $opt 0] eq "-" } {
-                if { [string index $val 0] eq "-" } {
-                    incr i -1; # Consider next not next-next!
-                    lappend opts $opt
-                } else {
-                    lappend opts $opt $val
-                }
-            } else {
-                break
-            }
-        }
-        set args [lrange $args $i end]
-    }    
-}
-
-
 # ::resp::disconnect -- Disconnect from server
 #
 #       Disconnect from a REDIS server and empty all references to the server.
@@ -322,6 +210,134 @@ proc ::resp::reply { sock } {
 }
 
 
+# ::resp::getopt -- Get options
+#
+#       From http://wiki.tcl.tk/17342
+#
+# Arguments:
+#	_argv	"pointer" to incoming arguments
+#	name	Name of option to extract
+#	_var	Pointer to variable to set
+#	default	Default value
+#
+# Results:
+#       1 if the option was found, 0 otherwise
+#
+# Side Effects:
+#       None.
+proc ::resp::getopt {_argv name {_var ""} {default ""}} {
+    upvar 1 $_argv argv $_var var
+    set pos [lsearch -regexp $argv ^$name]
+    if {$pos>=0} {
+        set to $pos
+        if {$_var ne ""} {
+            set var [lindex $argv [incr to]]
+        }
+        set argv [lreplace $argv $pos $to]
+        return 1
+    } else {
+        if {[llength [info level 0]] == 5} {set var $default}
+        return 0
+    }
+}
+
+ 
+# ::resp::defaults -- Init and option parsing based on namespace.
+#
+#       This procedure takes the dashled variables of a given (sub)namespace to
+#       initialise a dictionary. These variables are considered as being the
+#       canonical set of options for a command or object and contain good
+#       defaults, and the procedure will capture these from the arguments.
+#
+# Arguments:
+#	cx_	"Pointer" to dictionary to initialise and parse options in.
+#	ns	Namespace (FQ or relative to caller) where to get options from
+#	args	List of dashled options and arguments, must match content of namespace
+#
+# Results:
+#       Return the list of options that were taken from the arguments, an error
+#       when an option that does not exist in the namespace as a variable was
+#       found in the arguments.
+#
+# Side Effects:
+#       None.
+proc ::resp::defaults { cx_ ns args } {
+    upvar $cx_ CX
+
+    set parsed [list]
+    foreach v [uplevel info vars [string trimright $ns :]::-*] {
+        set opt [lindex [split $v :] end]
+        if { [getopt args $opt value [set $v]] } {
+            lappend parsed $opt
+        }
+        dict set CX $opt $value
+    }
+    
+    return $parsed
+}
+
+
+# ::resp::isolate -- Isolate options from arguments
+#
+#       Isolate dash-led options from the rest of the arguments. This procedure
+#       prefers the double-dash as a marker between the options and the
+#       arguments, but it is also able to traverse until the end of the options
+#       and the beginning of the arguments. Traversal requires that no value of
+#       an option starts with a dash to work properly.
+#
+# Arguments:
+#	args_	Pointer to list of arguments (will be modified!)
+#	opts_	Pointer to list of options
+#
+# Results:
+#       None.
+#
+# Side Effects:
+#       Modifies the args and opts lists that are passed as parameters to
+#       reflect the arguments and the options.
+proc ::resp::isolate { args_ opts_ } {
+    upvar $args_ args $opts_ opts
+    set idx [lsearch $args "--"]
+    if { $idx >= 0 } {
+        set opts [lrange $args 0 [expr {$idx-1}]]
+        set args [lrange $args [expr {$idx+1}] end]
+    } else {
+        set opts [list]
+        for {set i 0} {$i <[llength $args] } { incr i 2} {
+            set opt [lindex $args $i]
+            set val [lindex $args [expr {$i+1}]]
+            if { [string index $opt 0] eq "-" } {
+                if { [string index $val 0] eq "-" } {
+                    incr i -1; # Consider next not next-next!
+                    lappend opts $opt
+                } else {
+                    lappend opts $opt $val
+                }
+            } else {
+                break
+            }
+        }
+        set args [lrange $args $i end]
+    }    
+}
+
+
+
+# ::resp::ReadAndCallback -- Callback with response
+#
+#       This procedure is bound to the socket when it is ready to have data for
+#       reading. It will read a complete response from the server and deliver a
+#       callback with the response.
+#
+# Arguments:
+#	sock	Socket to read reply from
+#	cb	Command to callback
+#
+# Results:
+#       None.
+#
+# Side Effects:
+#       None.
 proc ::resp::ReadAndCallback { sock cb } {
     fileevent $sock readable {}
     set response [reply $sock]
@@ -331,6 +347,21 @@ proc ::resp::ReadAndCallback { sock cb } {
 }
 
 
+# ::resp::MWrite -- Multi-bulk write
+#
+#       Write a command and its arguments using the multi-bulk protocol. This is
+#       especially usefull when sending complex bodies of jobs for DISQUE.
+#
+# Arguments:
+#	sock	Socket to REDIS node.
+#	cmd	Command to send
+#	args	Arguments to command, each will lead to a "bulk"
+#
+# Results:
+#       None.
+#
+# Side Effects:
+#       None.
 proc ::resp::MWrite { sock cmd args } {
     set len [llength $args];
     incr len;  # Count the command as well
@@ -345,6 +376,22 @@ proc ::resp::MWrite { sock cmd args } {
     flush $sock
 }
 
+
+# ::resp::Write -- Write in regular mode
+#
+#       Send a command and its arguments to the REDIS server in the regular
+#       "one-line" mode.
+#
+# Arguments:
+#	sock	Socket to REDIS node
+#	cmd	Command to send
+#	args	Arguments to command.
+#
+# Results:
+#       None.
+#
+# Side Effects:
+#       None.
 proc ::resp::Write { sock cmd args } {
     puts -nonewline $sock [string toupper $cmd]
     if { [llength $args] } {
@@ -356,6 +403,19 @@ proc ::resp::Write { sock cmd args } {
     flush $sock
 }
 
+
+# ::resp::ReadMultiBulk -- Read several bulks
+#
+#       Read a multi-bulk formatted block of data from the REDIS socket.
+#
+# Arguments:
+#	sock	Socket to REDIS node
+#
+# Results:
+#       Return a list of each bulk that was read.
+#
+# Side Effects:
+#       None.
 proc ::resp::ReadMultiBulk { sock } {
     set len [ReadLine $sock]
     if { $len < 0 } {
@@ -370,6 +430,18 @@ proc ::resp::ReadMultiBulk { sock } {
 }
 
 
+# ::resp::ReadBulk -- Read one bulk
+#
+#       Read one bulk from the REDIS socket.
+#
+# Arguments:
+#	sock	Socket to REDIS node
+#
+# Results:
+#       Return the bulk that was read
+#
+# Side Effects:
+#       None.
 proc ::resp::ReadBulk { sock } {
     set len [ReadLine $sock]
     if { $len < 0 } {
@@ -380,6 +452,19 @@ proc ::resp::ReadBulk { sock } {
     return $buf
 }
 
+
+# ::resp::ReadLine -- Read one line
+#
+#       Read a single line from the REDIS socket.
+#
+# Arguments:
+#	sock	Socket to REDIS node.
+#
+# Results:
+#       Read line that was read, leading and trailing spaces are trimmed away.
+#
+# Side Effects:
+#       None.
 proc ::resp::ReadLine { sock } {
     return [string trim [gets $sock]]
 }
