@@ -10,7 +10,7 @@
 
 package require Tcl 8.6
 
-package require repro;   # repro implements the REDIS protocol
+package require resp;   # resp implements the REDIS protocol
 
 namespace eval ::disque {
     namespace eval vars {
@@ -28,44 +28,13 @@ namespace eval ::disque {
         variable -grace 5000;   # Grace period when shutting down node
         variable -polldown 100; # Poll (in ms) for detecting jobs end on shutdown
     }
-    # This holds the defaults options for new jobs.
-    namespace eval addjob {
-        variable -timeout 1000
-        variable -replicate -1
-        variable -delay -1;    # Will mean default of Disque
-        variable -retry -1;    # Will mean default
-        variable -ttl -1;      # Will mean default of Disque
-        variable -maxlen -1;   # Will mean no maxlen
-        variable -async off;
-    }
-    # This holds the defaults options for getting jobs from queues
-    namespace eval getjob {
-        variable -nohang off
-        variable -timeout -1
-        variable -count -1
-        variable -withcounters off
-    }
-    # This holds the defaults options for iterating through queues
-    namespace eval qscan {
-        variable -count -1
-        variable -busyloop off
-        variable -minlen -1
-        variable -maxlex -1
-        variable -importrate -1
-    }
-    # This holds the defaults options for iterating through jobs
-    namespace eval jscan {
-        variable -count -1
-        variable -busyloop off
-        variable -queue ""
-        variable -reply ""
-        variable -states {}
-    }
     
     namespace export {[a-z]*}
     # Create an alias for new as the name of the current namespace, this is the
     # only command that is really exposed.
     interp alias {} [namespace current] {} [namespace current]::new
+    
+    namespace import ::resp::getopt ::resp::defaults ::resp::isolate
 }
 
 
@@ -127,7 +96,7 @@ proc ::disque::new { args } {
     
     # Capture arguments and give good defaults into the connection object (a
     # dictionry). Create the command
-    repro defaults D disque {*}$args    
+    defaults D disque {*}$args
     interp alias {} $d {} [namespace current]::Dispatch $d
     
     # Initialise internal state of connection object.
@@ -166,8 +135,9 @@ proc ::disque::raw { d cmd args } {
     upvar \#0 $d D
     
     if { [dict get $D sock] ne "" } {
+        isolate args opts
         Liveness $d COMMAND $cmd $args
-        set answer [repro command [dict get $D sock] [string toupper $cmd] {*}$args]
+        set answer [resp command [dict get $D sock] [string toupper $cmd] {*}$opts -- {*}$args]
         return $answer
     }
     return -code error "No connection!"
@@ -188,7 +158,7 @@ proc ::disque::raw { d cmd args } {
 #       All references to the connection are lost and memory is cleaned up.
 proc ::disque::close { d } {
     Liveness $d CLOSE
-    repro disconnect $d
+    resp disconnect $d
     unset $d
     interp alias {} $d {}
 }
@@ -227,7 +197,7 @@ proc ::disque::shutdown { d } {
 }
 
 
-# ::disque::Shutdown -- Abrubt shutdown
+# ::disque::Shutdown -- Abrupt shutdown
 #
 #       This will immediately shutdown the node to which this client is
 #       connected.
@@ -395,7 +365,7 @@ proc ::disque::Connect { d } {
         }
         
         # Now connect to node
-        dict set D sock [repro connect $hst -port $prt -auth $paswd]
+        dict set D sock [resp connect $hst -port $prt -auth $paswd]
         Liveness $d CONNECTED
         
         # And handshake with it for the first time. We do a protocol version
@@ -454,22 +424,17 @@ proc ::disque::jobid { id } {
 
 
 proc ::disque::CommandADDJOB { d args } {
-    if { [llength $args] < 2 } {
-        return -code error "Need at least a queue name and a job content!"
-    }
-    # Capture queue and body and advance to optional arguments.
+    set cmd [list]
+    Opt2CommandInteger cmd args -timeout "" 1000
+    Opt2CommandInteger cmd args -replicate REPLICATE
+    Opt2CommandInteger cmd args -delay DELAY
+    Opt2CommandInteger cmd args -retry RETRY
+    Opt2CommandInteger cmd args -ttl TTL
+    Opt2CommandInteger cmd args -maxlen MAXLEN
+    Opt2CommandBoolean cmd args -async ASYNC
     lassign $args queue body
-    set args [lrange $args 2 end]
-    repro defaults JOB addjob {*}$args
+    set cmd [linsert $cmd 0 $queue $body]
     
-    set cmd [list $queue $body]
-    Opt2CommandInteger cmd $JOB -timeout ""
-    Opt2CommandInteger cmd $JOB -replicate REPLICATE
-    Opt2CommandInteger cmd $JOB -delay DELAY
-    Opt2CommandInteger cmd $JOB -retry RETRY
-    Opt2CommandInteger cmd $JOB -ttl TTL
-    Opt2CommandInteger cmd $JOB -maxlen MAXLEN
-    Opt2CommandBoolean cmd $JOB -async ASYNC
     set id [raw $d ADDJOB {*}$cmd]
     jobid $id;  # We don't use, but this will verify the ID received
     return $id
@@ -477,34 +442,12 @@ proc ::disque::CommandADDJOB { d args } {
 
 
 proc ::disque::CommandGETJOB { d args } {
-    set idx [lsearch $args "--"]
-    if { $idx >= 0 } {
-        set opts [lrange $args 0 [expr {$idx-1}]]
-        set args [lrange $args [expr {$idx+1}]]
-    } else {
-        set opts [list]
-        for {set i 0} {$i <[llength $args] } { incr i 2} {
-            set opt [lindex $args $i]
-            if { [string index $opt 0] eq "-" } {
-                lappend opts [lindex $args $i] [lindex $args [expr {$i+1}]]
-            } else {
-                break
-            }
-        }
-        set args [lrange $args $i end]
-    }
-
-    if { [llength $args] == 0 } {
-        return -code error "Need at least a queue name!"
-    }
-    # Capture optional arguments.
-    repro defaults GET getjob {*}$opts
-    
     set cmd [list]
-    Opt2CommandBoolean cmd $GET -nohang NOHANG
-    Opt2CommandInteger cmd $GET -timeout TIMEOUT
-    Opt2CommandInteger cmd $GET -count COUNT
-    Opt2CommandBoolean cmd $GET -withcounters WITHCOUNTERS
+    Opt2CommandBoolean cmd args -nohang NOHANG
+    Opt2CommandInteger cmd args -timeout TIMEOUT
+    Opt2CommandInteger cmd args -count COUNT
+    Opt2CommandBoolean cmd args -withcounters WITHCOUNTERS
+    
     lappend cmd FROM
     set jobs [raw $d GETJOB {*}[linsert $args 0 {*}$cmd]]
     # Properly fail on job IDs that are not...
@@ -558,34 +501,34 @@ proc ::disque::CommandJobs { d cmd args } {
 }
 
 
-proc ::disque::CommandQSCAN { d cursor args } {
-    repro defaults SCAN qscan {*}$args
-    
-    set cmd [list $cursor]
-    Opt2CommandInteger cmd $SCAN -count COUNT
-    Opt2CommandBoolean cmd $SCAN -busyloop BUSYLOOP
-    Opt2CommandInteger cmd $SCAN -minlen MINLEN
-    Opt2CommandInteger cmd $SCAN -maxlen MAXLEN
-    Opt2CommandInteger cmd $SCAN -importrate IMPORTRATE
+proc ::disque::CommandQSCAN { d args } {
+    isolate args opts
+    if { [llength $args] < 1 } {
+        return -code error "You need to specify a cursor"
+    }
+    set cmd [lrange $args 0 0];  # Pickup the cursor
+    Opt2CommandInteger cmd opts -count COUNT
+    Opt2CommandBoolean cmd opts -busyloop BUSYLOOP
+    Opt2CommandInteger cmd opts -minlen MINLEN
+    Opt2CommandInteger cmd opts -maxlen MAXLEN
+    Opt2CommandInteger cmd opts -importrate IMPORTRATE
+
     return [raw $d QSCAN {*}$cmd]
 }
 
 
-proc ::disque::CommandJSCAN { d cursor args } {
-    repro defaults SCAN jscan {*}$args
-    
-    set cmd [list $cursor]
-    Opt2CommandInteger cmd $SCAN -count COUNT
-    Opt2CommandBoolean cmd $SCAN -busyloop BUSYLOOP
-    Opt2CommandString cmd $SCAN -queue QUEUE
-    if { [dict exists $SCAN -reply] } {
-        if { [dict get $SCAN -reply] ni [list all id] } {
-            return -code error "Reply [dict get $SCAN -reply] not a proper reply"
-        }
-        Opt2CommandString cmd $SCAN -reply REPLY
+proc ::disque::CommandJSCAN { d args } {
+    isolate args opts
+    if { [llength $args] < 1 } {
+        return -code error "You need to specify a cursor"
     }
-    if { [dict exists $SCAN -states] } {
-        foreach s [dict get $SCAN -states] {
+    set cmd [lrange $args 0 0];  # Pickup the cursor
+    Opt2CommandInteger cmd opts -count COUNT
+    Opt2CommandBoolean cmd opts -busyloop BUSYLOOP
+    Opt2CommandString cmd opts -queue QUEUE
+    Opt2CommandString cmd opts -reply REPLY [list all id]
+    if { [getopt opts -states states] } {
+        foreach s $states {
             lappend cmd STATE $s
         }
     }
@@ -617,34 +560,45 @@ proc ::disque::CommandPAUSE { d queue args } {
 }
 
 
-proc ::disque::Opt2CommandBoolean { argv_ D opt cmd } {
-    upvar $argv_ argv
-    if { [string is true -strict [dict get $D $opt]] } {
-        lappend argv $cmd
+proc ::disque::Opt2CommandBoolean { cmd_ args_ opt api } {
+    upvar $cmd_ cmd $args_ args
+    if { [getopt args $opt] } {
+        lappend cmd $api
     }
 }
 
-proc ::disque::Opt2CommandInteger { argv_ D opt cmd } {
-    upvar $argv_ argv
-    if { [dict get $D $opt] >= 0 } {
-        if { ! [string is integer -strict [dict get $D $opt]]} {
-            return -code error "$opt is not an integer!"
+proc ::disque::Opt2CommandInteger { cmd_ args_ opt api { dft "" } } {
+    upvar $cmd_ cmd $args_ args
+    if { $dft ne "" } {
+        getopt args $opt value $dft
+    } else {
+        if { ![getopt args $opt value] } {
+            return
         }
-        if { $cmd ne "" } {
-            lappend argv $cmd
-        }
-        lappend argv [dict get $D $opt]
-    }    
+    }
+    
+    if { ! [string is integer -strict $value]} {
+        return -code error "Value $value of $opt is not an integer!"
+    }
+    if { $api ne "" } {
+        lappend cmd $api
+    }
+    lappend cmd $value
 }
 
-proc ::disque::Opt2CommandString { argv_ D opt cmd } {
-    upvar $argv_ argv
-    if { [dict get $D $opt] >= 0 } {
-        if { $cmd ne "" } {
-            lappend argv $cmd
+proc ::disque::Opt2CommandString { cmd_ args_ opt api {oneof {}} } {
+    upvar $cmd_ cmd $args_ args
+    if { [getopt args $opt value] } {
+        if { [llength $oneof] } {
+            if { $value ni $oneof } {
+                return -code error "Value $value of $opt not one of [join $oneof ,\ ]"
+            }
         }
-        lappend argv [dict get $D $opt]
-    }    
+        if { $api ne "" } {
+            lappend cmd $api
+        }
+        lappend cmd $value
+    }
 }
 
 
