@@ -33,7 +33,7 @@ namespace eval ::disque {
     # Create an alias for new as the name of the current namespace, this is the
     # only command that is really exposed.
     interp alias {} [namespace current] {} [namespace current]::new
-    
+    # Bring in commands from RESP to simplify our life.
     namespace import ::resp::getopt ::resp::defaults ::resp::isolate
 }
 
@@ -49,10 +49,6 @@ namespace eval ::disque {
 # command, latency, hello, addjob, getjob, ackjob, fastack, deljob, show,
 # loadjob, bgrewriteaof, qlen, qpeek, qstat, qscan, jscan, enqueue, dequeue,
 # nack, working, pause.
-#
-# We might want to modify the code so that the list of commands is requested
-# from the node on startup, so as to know exactly the subset of commands that we
-# can use in the dispatching implementation.
 
 
 # ::disque::new -- Create a new DISQUE cluster connection
@@ -133,6 +129,14 @@ proc ::disque::new { args } {
 #       None.
 proc ::disque::raw { d cmd args } {
     upvar \#0 $d D
+
+    # Check that this is a known DISQUE command, we collect the list from the
+    # node upon connection.
+    if { [dict exists $D commands] && [llength [dict get $D commands]] } {
+        if { [string toupper $cmd] ni [dict get $D commands] } {
+            return -code error "Command $cmd is not supported at node!"
+        }
+    }
     
     if { [dict get $D sock] ne "" } {
         isolate args opts
@@ -378,6 +382,12 @@ proc ::disque::Connect { d } {
         
         # Store the identifier of the node here.
         dict set D id [lindex $answer 1]
+        
+        # Collect the list of known commands
+        foreach c [raw $d "COMMAND"] {
+            dict lappend D commands [string toupper [lindex $c 0]]
+        }
+        
         Liveness $d HANDSHAKED
     }
 }
