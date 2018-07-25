@@ -632,7 +632,7 @@ proc ::disque::Liveness { d state args } {
     
     if { [llength [dict get $D -liveness]] } {
         if { [catch {{*}[dict get $D -liveness] $d [string toupper $state] {*}$args} err] } {
-            Log WARN "Could not callback for liveness: $err"
+            Log $d WARN "Could not callback for liveness: $err"
         }
     }
 }
