@@ -5,10 +5,10 @@ These two Tcl modules implements a high-level interface to the
 modules abstracts most of the API, as examplified in the following code snippet.
 
     package require disque
-    set d [disque -nodes localhost];           # Connect to localhost only.
-    set id [$d addjob -async /queue test];     # Enqueue a job
-    lassign [$d getjob /queue] queue id body;  # Get it back
-    $d ackjob $id;                             # ACK it as done.
+    set d [disque -nodes localhost];                      # Connect to localhost only.
+    set id [$d addjob -async /queue test];                # Enqueue a job
+    lassign [lindex [$d getjob /queue] 0] queue id body;  # Get it back
+    $d ackjob $id;                                        # ACK it as done.
     
 The programming interface for the main `disque` module happens through a single
 command called `disque`, which will connect randomly to one of the nodes
