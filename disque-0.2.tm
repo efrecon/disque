@@ -18,6 +18,7 @@ namespace eval ::disque {
         variable -version 1;  # Protocol version
         variable -id -;       # Separator for ids.
         variable -idlen 40;   # Exact length of job ids.
+        variable version       [lindex [split [file rootname [file tail [info script]]] -] end]        
     }
     # This holds the default options for all new instances.
     namespace eval disque {
@@ -642,3 +643,5 @@ proc ::disque::Log { d lvl msg } {
     set lvl [string tolower $lvl]
     puts stderr "\[$lvl\] $msg"
 }
+
+package provide disque $::disque::vars::version

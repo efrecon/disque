@@ -17,6 +17,7 @@ namespace eval ::resp {
         variable -eol "\r\n"
         variable -port 6379
         variable -auth ""
+        variable version       [lindex [split [file rootname [file tail [info script]]] -] end]        
     }
     namespace export {[a-z]*}
     namespace ensemble create
@@ -468,3 +469,5 @@ proc ::resp::ReadBulk { sock } {
 proc ::resp::ReadLine { sock } {
     return [string trim [gets $sock]]
 }
+
+package provide resp $::resp::vars::version
