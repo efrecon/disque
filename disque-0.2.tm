@@ -162,8 +162,12 @@ proc ::disque::raw { d cmd args } {
 # Side Effects:
 #       All references to the connection are lost and memory is cleaned up.
 proc ::disque::close { d } {
+    upvar \#0 $d D
+
     Liveness $d CLOSE
-    resp disconnect $d
+    if { [dict get $D sock] ne "" } {
+        resp disconnect [dict get $D sock]
+    }
     unset $d
     interp alias {} $d {}
 }
